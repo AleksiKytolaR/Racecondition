@@ -8,30 +8,148 @@ type PixelList = Pixel[];
 const RED: Color = { r: 255, g: 0, b: 0 };
 const GREEN: Color = { r: 0, g: 255, b: 0 };
 const BLUE: Color = { r: 0, g: 0, b: 255 };
+const WHITE: Color = { r: 255, g: 255, b: 255 };
 const BLACK: Color = { r: 0, g: 0, b: 0 };
 
+const ARROW_SHAPE: Vec2[] = [
+	{ x: 0, y: -2 },
+	{ x: 0, y: -3 },
+	{ x: 0, y: -4 },
+	{ x: 0, y: -5 },
+	{ x: 0, y: -6 },
+];
+
+class LowPassFilter {
+	private alpha: number;
+	private previousOutput: number;
+
+	constructor(timeConstant: number, initialOutput = 0) {
+		this.alpha = 1 / (timeConstant + 1);
+		this.previousOutput = initialOutput;
+	}
+
+	public filter(input: number): number {
+		const output = this.alpha * input + (1 - this.alpha) * this.previousOutput;
+		this.previousOutput = output;
+		return output;
+	}
+}
+
+class PIDController {
+	private kp: number;
+	private ki: number;
+	private kd: number;
+	private derivativeFilter: LowPassFilter;
+	private integral = 0;
+	private previousError: number;
+	private maxIntegral: number;
+	public derivativeFiltered = 0;
+	public pValue = 0;
+	public dValue = 0;
+	public iValue = 0;
+
+	constructor(
+		kp: number,
+		ki: number,
+		kd: number,
+		derivativeFilterTimeConstant: number,
+		maxIntegral: number
+	) {
+		this.kp = kp;
+		this.ki = ki;
+		this.kd = kd;
+		this.derivativeFilter = new LowPassFilter(derivativeFilterTimeConstant);
+		this.integral = 0;
+		this.previousError = 0;
+		this.maxIntegral = maxIntegral;
+	}
+
+	public update(error: number, dt: number): number {
+		this.integral += error * dt * this.ki;
+		this.integral = Math.max(
+			-this.maxIntegral,
+			Math.min(this.integral, this.maxIntegral)
+		);
+		this.derivativeFiltered = this.derivativeFilter.filter(
+			(error - this.previousError) / dt
+		);
+		this.previousError = error;
+		this.pValue = this.kp * error;
+		this.iValue = this.integral;
+		this.dValue = this.kd * this.derivativeFiltered;
+		return this.pValue + this.iValue + this.dValue;
+	}
+}
+
+const MAX_STEERING_AMOUNT = 1;
+const steeringPID = new PIDController(
+	1.0 / 45,
+	0, //1 / 1000,
+	7 / 1000,
+	1.0 / 3,
+	MAX_STEERING_AMOUNT
+);
+const throttleLPF = new LowPassFilter(1 / 7, 0);
+const targetPositionXLPF = new LowPassFilter(1 / 7, 0);
+const targetPositionYLPF = new LowPassFilter(1 / 7, 0);
+let previousTimestamp = Date.now();
+let tipOfMiddleLane: Vec2 = { x: 32, y: 20 };
+let tipOfMiddleLaneFiltered = tipOfMiddleLane;
+
 function preprocess(frame: Frame) {
+	const h = frame.length;
+	const w = frame[0].length;
 	const threshold = 10;
-	return frame.map((row) =>
-		row.map((pixel) => {
+	const processed = frame.map((row, y) =>
+		row.map((pixel, x) => {
 			if (pixel.r - Math.max(pixel.g, pixel.b) > threshold) return RED;
 			if (pixel.g - Math.max(pixel.r, pixel.b) > threshold) return GREEN;
 			if (pixel.b - Math.max(pixel.g, pixel.r) > threshold) return BLUE;
 			return BLACK;
 		})
 	);
+
+	const blobs = detectBlobs(processed);
+	const middleBlob = blobs
+		.filter((blob) => sameColor(blob[0], BLUE))
+		.sort((a, b) => a.length - b.length)[0];
+
+	if (middleBlob) {
+		// If blob found, use new detected tip. Otherwise use previous value
+		const { r, g, b, ...detectedTipOfMiddleLane } = findTipOfBlob(middleBlob);
+		tipOfMiddleLane = detectedTipOfMiddleLane;
+	}
+
+	tipOfMiddleLaneFiltered = {
+		x: targetPositionXLPF.filter(tipOfMiddleLane.x),
+		y: targetPositionYLPF.filter(tipOfMiddleLane.y),
+	};
+
+	for (const arrowOffset of ARROW_SHAPE) {
+		const point: Vec2 = {
+			x: Math.round(tipOfMiddleLaneFiltered.x + arrowOffset.x),
+			y: Math.round(tipOfMiddleLaneFiltered.y + arrowOffset.y),
+		};
+		if (point.x >= 0 && point.x < w && point.y >= 0 && point.y < h) {
+			try {
+				processed[point.y][point.x] = WHITE;
+			} catch (e) {
+				console.log(point);
+			}
+		}
+	}
+	return processed;
 }
 
 function sameColor(x: Color, y: Color) {
 	return x.r === y.r && x.g === y.g && x.b === y.b;
 }
 
-function detectBlobs(frame: Frame, minBlobSize = 50) {
+function detectBlobs(frame: Frame, minBlobSize = 35) {
 	const h = frame.length;
 	const w = frame[0].length;
 	const blobs: Pixel[][] = [];
 	const pixelList = frameToPixelList(frame);
-	console.log(`W: ${w}, H: ${h} Count: ${w * h} PixList: ${pixelList.length}`);
 
 	while (pixelList.length > 0) {
 		const current = pixelList[0];
@@ -89,36 +207,74 @@ function frameToPixelList(frame: Frame) {
 	return pixelList;
 }
 
-function findTipOfBlob(frame: Frame, blob: Pixel[]) {
-	const middle: Vec2 = { x: frame[0].length / 2, y: frame.length / 2 };
-	const sorted = blob.sort((a, b) => {
-		if (a.y < b.y) return -1;
-		if (Math.abs(a.x - middle.x) < Math.abs(b.x - middle.x)) return -1;
-		return 1;
-	});
+function findTipOfBlob(blob: Pixel[]) {
+	const blobAverageCoordinate: Vec2 = { x: 0, y: 0 };
+	for (const pix of blob) {
+		blobAverageCoordinate.x += pix.x;
+		blobAverageCoordinate.y += pix.y;
+	}
+	blobAverageCoordinate.x /= blob.length;
+	blobAverageCoordinate.y /= blob.length;
 
-	return sorted[0];
+	let tip: Pixel = blob[0];
+	for (const pix of blob) {
+		// First choose highest Y coordinate with a threshold of 3
+		if (pix.y - tip.y <= -3) {
+			tip = pix;
+			continue;
+		} else if (
+			// Second choose highest distance from blob average X coord
+			Math.abs(pix.x - blobAverageCoordinate.x) >
+				Math.abs(tip.x - blobAverageCoordinate.x) &&
+			pix.y - tip.y <= 0
+		) {
+			tip = pix;
+			continue;
+		}
+	}
+	return tip;
 }
 
 function decide(frame: Frame) {
 	const blobs = detectBlobs(frame);
-	const middleBlob = blobs.find((blob) => sameColor(blob[0], BLUE));
-	if (!middleBlob) {
-		console.log('No middle blob found!');
-		return { throttle: 0, steering: 0 };
-	}
+	const middleBlob = blobs
+		.filter((blob) => sameColor(blob[0], BLUE))
+		.sort((a, b) => a.length - b.length)[0];
 
 	const centerCoordinate: Vec2 = {
 		x: frame[0].length / 2,
 		y: frame.length / 2,
 	};
-	const tipOfMiddleLane = findTipOfBlob(frame, middleBlob);
+
 	const vectorTowardsMiddle: Vec2 = {
-		x: centerCoordinate.x - tipOfMiddleLane.x,
-		y: centerCoordinate.y - tipOfMiddleLane.y,
+		x: centerCoordinate.x - tipOfMiddleLaneFiltered.x,
+		y: centerCoordinate.y - tipOfMiddleLaneFiltered.y,
 	};
 
-	console.log(vectorTowardsMiddle.x);
+	const timeStamp = Date.now();
+	const dt = (timeStamp - previousTimestamp) / 1000;
+	previousTimestamp = timeStamp;
+	let steering = steeringPID.update(vectorTowardsMiddle.x, dt);
+	let throttle =
+		0.03 +
+		0.04 * (1 - Math.min(1, Math.abs(steering) / (0.6 * MAX_STEERING_AMOUNT)));
 
-	return { throttle: 0, steering: 0 };
+	throttle = Math.min(1, Math.max(0, throttle));
+	const throttleFiltered = throttleLPF.filter(throttle);
+	steering = Math.min(
+		MAX_STEERING_AMOUNT,
+		Math.max(-MAX_STEERING_AMOUNT, steering)
+	);
+
+	return {
+		throttle: throttleFiltered,
+		throttleRaw: throttle,
+		tipOfMiddleLane,
+		vectorTowardsMiddle,
+		steering,
+		pValue: steeringPID.pValue,
+		iValue: steeringPID.iValue,
+		dValue: steeringPID.dValue,
+		dt,
+	};
 }
