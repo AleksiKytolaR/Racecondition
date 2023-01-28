@@ -29,14 +29,14 @@ function sameColor(x: Color, y: Color) {
 function detectBlobs(frame: Frame, minBlobSize = 50) {
 	const h = frame.length;
 	const w = frame[0].length;
-	const blobs: Set<Pixel>[] = [];
+	const blobs: Pixel[][] = [];
 	const pixelList = frameToPixelList(frame);
 	console.log(`W: ${w}, H: ${h} Count: ${w * h} PixList: ${pixelList.length}`);
 
 	while (pixelList.length > 0) {
 		const current = pixelList[0];
 		const blob = detectBlobFromPoint(pixelList, current);
-		if (blob.size < minBlobSize) continue;
+		if (blob.length < minBlobSize) continue;
 		blobs.push(blob);
 	}
 	return blobs;
@@ -72,7 +72,7 @@ function detectBlobFromPoint(pixelList: PixelList, fromPixel: Pixel) {
 		}
 	}
 
-	return blob;
+	return Array.from(blob);
 }
 
 function frameToPixelList(frame: Frame) {
@@ -89,25 +89,36 @@ function frameToPixelList(frame: Frame) {
 	return pixelList;
 }
 
+function findTipOfBlob(frame: Frame, blob: Pixel[]) {
+	const middle: Vec2 = { x: frame[0].length / 2, y: frame.length / 2 };
+	const sorted = blob.sort((a, b) => {
+		if (a.y < b.y) return -1;
+		if (Math.abs(a.x - middle.x) < Math.abs(b.x - middle.x)) return -1;
+		return 1;
+	});
+
+	return sorted[0];
+}
+
 function decide(frame: Frame) {
 	const blobs = detectBlobs(frame);
-	const leftBlob = blobs.find((blob) =>
-		sameColor(blob.values().next().value, RED)
-	);
-	const middleBlob = blobs.find((blob) =>
-		sameColor(blob.values().next().value, BLUE)
-	);
-	const rightBlob = blobs.find((blob) =>
-		sameColor(blob.values().next().value, GREEN)
-	);
+	const middleBlob = blobs.find((blob) => sameColor(blob[0], BLUE));
+	if (!middleBlob) {
+		console.log('No middle blob found!');
+		return { throttle: 0, steering: 0 };
+	}
 
-	console.log(
-		`Left blob: ${JSON.stringify(
-			leftBlob!.values().next().value,
-			undefined,
-			2
-		)}`
-	);
+	const centerCoordinate: Vec2 = {
+		x: frame[0].length / 2,
+		y: frame.length / 2,
+	};
+	const tipOfMiddleLane = findTipOfBlob(frame, middleBlob);
+	const vectorTowardsMiddle: Vec2 = {
+		x: centerCoordinate.x - tipOfMiddleLane.x,
+		y: centerCoordinate.y - tipOfMiddleLane.y,
+	};
+
+	console.log(vectorTowardsMiddle.x);
 
 	return { throttle: 0, steering: 0 };
 }
