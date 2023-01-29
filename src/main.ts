@@ -9,6 +9,7 @@ const RED: Color = { r: 255, g: 0, b: 0 };
 const GREEN: Color = { r: 0, g: 255, b: 0 };
 const BLUE: Color = { r: 0, g: 0, b: 255 };
 const WHITE: Color = { r: 255, g: 255, b: 255 };
+const GRAY: Color = { r: 100, g: 100, b: 100 };
 const BLACK: Color = { r: 0, g: 0, b: 0 };
 
 const ARROW_SHAPE: Vec2[] = [
@@ -89,12 +90,11 @@ const steeringPID = new PIDController(
 	1.0 / 3,
 	MAX_STEERING_AMOUNT
 );
-const throttleLPF = new LowPassFilter(1 / 7, 0);
-const targetPositionXLPF = new LowPassFilter(1 / 7, 0);
-const targetPositionYLPF = new LowPassFilter(1 / 7, 0);
+const targetPositionXLPF = new LowPassFilter(1 / 2, 0);
+const targetPositionYLPF = new LowPassFilter(1 / 2, 0);
 let previousTimestamp = Date.now();
-let tipOfMiddleLane: Vec2 = { x: 32, y: 20 };
-let tipOfMiddleLaneFiltered = tipOfMiddleLane;
+let targetCoord: Vec2 = { x: 32, y: 20 };
+let targetPointFiltered = targetCoord;
 
 function preprocess(frame: Frame) {
 	const h = frame.length;
@@ -116,19 +116,34 @@ function preprocess(frame: Frame) {
 
 	if (middleBlob) {
 		// If blob found, use new detected tip. Otherwise use previous value
-		const { r, g, b, ...detectedTipOfMiddleLane } = findTipOfBlob(middleBlob);
-		tipOfMiddleLane = detectedTipOfMiddleLane;
+		targetCoord = findTopCenterOfBlob(middleBlob);
 	}
 
-	tipOfMiddleLaneFiltered = {
-		x: targetPositionXLPF.filter(tipOfMiddleLane.x),
-		y: targetPositionYLPF.filter(tipOfMiddleLane.y),
+	targetPointFiltered = {
+		x: targetPositionXLPF.filter(targetCoord.x),
+		y: targetPositionYLPF.filter(targetCoord.y),
 	};
 
+	// Render raw target
 	for (const arrowOffset of ARROW_SHAPE) {
 		const point: Vec2 = {
-			x: Math.round(tipOfMiddleLaneFiltered.x + arrowOffset.x),
-			y: Math.round(tipOfMiddleLaneFiltered.y + arrowOffset.y),
+			x: Math.round(targetCoord.x + arrowOffset.x),
+			y: Math.round(targetCoord.y + arrowOffset.y),
+		};
+		if (point.x >= 0 && point.x < w && point.y >= 0 && point.y < h) {
+			try {
+				processed[point.y][point.x] = GRAY;
+			} catch (e) {
+				console.log(point);
+			}
+		}
+	}
+
+	// Render filtered target
+	for (const arrowOffset of ARROW_SHAPE) {
+		const point: Vec2 = {
+			x: Math.round(targetPointFiltered.x + arrowOffset.x),
+			y: Math.round(targetPointFiltered.y + arrowOffset.y),
 		};
 		if (point.x >= 0 && point.x < w && point.y >= 0 && point.y < h) {
 			try {
@@ -235,20 +250,37 @@ function findTipOfBlob(blob: Pixel[]) {
 	return tip;
 }
 
-function decide(frame: Frame) {
-	const blobs = detectBlobs(frame);
-	const middleBlob = blobs
-		.filter((blob) => sameColor(blob[0], BLUE))
-		.sort((a, b) => a.length - b.length)[0];
+function findTopCenterOfBlob(blob: Pixel[]) {
+	let minY = blob[0].y;
+	for (const pix of blob) {
+		if (pix.y < minY) {
+			minY = pix.y;
+		}
+	}
 
+	const averageTopCoordinate: Vec2 = { x: 0, y: 0 };
+	let count = 0;
+	for (const pix of blob) {
+		if (pix.y <= minY) {
+			averageTopCoordinate.x += pix.x;
+			averageTopCoordinate.y += pix.y;
+			count++;
+		}
+	}
+	averageTopCoordinate.x /= count;
+	averageTopCoordinate.y /= count;
+	return averageTopCoordinate;
+}
+
+function decide(frame: Frame) {
 	const centerCoordinate: Vec2 = {
 		x: frame[0].length / 2,
 		y: frame.length / 2,
 	};
 
 	const vectorTowardsMiddle: Vec2 = {
-		x: centerCoordinate.x - tipOfMiddleLaneFiltered.x,
-		y: centerCoordinate.y - tipOfMiddleLaneFiltered.y,
+		x: centerCoordinate.x - targetPointFiltered.x,
+		y: centerCoordinate.y - targetPointFiltered.y,
 	};
 
 	const timeStamp = Date.now();
@@ -260,16 +292,13 @@ function decide(frame: Frame) {
 		0.04 * (1 - Math.min(1, Math.abs(steering) / (0.6 * MAX_STEERING_AMOUNT)));
 
 	throttle = Math.min(1, Math.max(0, throttle));
-	const throttleFiltered = throttleLPF.filter(throttle);
 	steering = Math.min(
 		MAX_STEERING_AMOUNT,
 		Math.max(-MAX_STEERING_AMOUNT, steering)
 	);
 
 	return {
-		throttle: throttleFiltered,
-		throttleRaw: throttle,
-		tipOfMiddleLane,
+		throttle,
 		vectorTowardsMiddle,
 		steering,
 		pValue: steeringPID.pValue,
