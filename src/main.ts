@@ -138,14 +138,15 @@ class PIDController {
 
 const MAX_STEERING_AMOUNT = 1;
 const steeringPID = new PIDController(
-	1.0 / 100,
+	1.0 / 75,
 	0,
-	1 / 900,
-	1.0 / 1000,
+	1 / 550,
+	0.5,
 	MAX_STEERING_AMOUNT
 );
-const targetPositionXFilter = new LowPassFilter(0.6, 0);
-const targetPositionYFilter = new LowPassFilter(0.6, 0);
+const targetPositionXFilter = new LowPassFilter(1 / 2, 0);
+const targetPositionYFilter = new LowPassFilter(1 / 2, 0);
+const throttleFilter = new LowPassFilter(1 / 3, 0);
 //const targetPositionXFilter = new MovingAverageFilter(2);
 //const targetPositionYFilter = new MovingAverageFilter(2);
 let previousTimestamp = Date.now();
@@ -174,7 +175,7 @@ function preprocess(frame: Frame) {
 
 	if (middleBlob) {
 		// If blob found, use new detected tip. Otherwise use previous value
-		targetCoord = findTopCenterOfBlob(middleBlob);
+		targetCoord = findTipOfBlob(middleBlob);
 	}
 
 	targetPointFiltered = {
@@ -192,7 +193,7 @@ function preprocess(frame: Frame) {
 	};
 	const angleOriginCoordinate: Vec2 = {
 		x: frame[0].length / 2,
-		y: frame.length / 2 + 15,
+		y: frame.length / 2 + 42,
 	};
 	const angleTowardsTargetRad = Math.atan2(
 		targetPointFiltered.y - angleOriginCoordinate.y,
@@ -223,10 +224,10 @@ function preprocess(frame: Frame) {
 	}
 	const lineEnd: Vec2 = {
 		x: Math.round(
-			angleOriginCoordinate.x + Math.cos(angleTowardsTargetRad) * 8
+			angleOriginCoordinate.x + Math.cos(angleTowardsTargetRad) * 30
 		),
 		y: Math.round(
-			angleOriginCoordinate.y + Math.sin(angleTowardsTargetRad) * 8
+			angleOriginCoordinate.y + Math.sin(angleTowardsTargetRad) * 30
 		),
 	};
 
@@ -265,7 +266,7 @@ function sameColor(x: Color, y: Color) {
 	return x.r === y.r && x.g === y.g && x.b === y.b;
 }
 
-function detectBlobs(frame: Frame, minBlobSize = 35) {
+function detectBlobs(frame: Frame, minBlobSize = 20) {
 	const h = frame.length;
 	const w = frame[0].length;
 	const blobs: Pixel[][] = [];
@@ -382,22 +383,27 @@ function decide(frame: Frame) {
 	const dt = (timeStamp - previousTimestamp) / 1000;
 	previousTimestamp = timeStamp;
 	let steering = steeringPID.update(-targetBearingDeg, dt);
+
+	let throttle =
+		0.08 +
+		0.14 * (1 - Math.min(1, Math.abs(steering) / (0.25 * MAX_STEERING_AMOUNT)));
+
 	/*
 	let throttle =
-		0.02 +
-		0.05 * (1 - Math.min(1, Math.abs(steering) / (0.6 * MAX_STEERING_AMOUNT)));
-		*/
-	let throttle =
-		0.04 +
-		0.06 * (1 - Math.min(1, Math.max(0, Math.abs(targetBearingDeg) / 90)));
+		0.045 +
+		0.06 *
+			(1 -
+				Math.pow(Math.min(1, Math.max(0, Math.abs(targetBearingDeg) / 90)), 2));
 
+				*/
 	throttle = Math.min(1, Math.max(0, throttle));
+	const throttleFiltered = throttleFilter.filter(throttle);
 	steering = Math.min(
 		MAX_STEERING_AMOUNT,
 		Math.max(-MAX_STEERING_AMOUNT, steering)
 	);
 	return {
-		throttle,
+		throttle: throttleFiltered,
 		steering,
 		targetBearingDeg,
 		pValue: steeringPID.pValue,
