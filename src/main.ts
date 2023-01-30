@@ -20,6 +20,60 @@ const ARROW_SHAPE: Vec2[] = [
 	{ x: 0, y: -6 },
 ];
 
+function getLinePoints(x0: number, y0: number, x1: number, y1: number) {
+	const dx = Math.abs(x1 - x0);
+	const dy = Math.abs(y1 - y0);
+	const sx = x0 < x1 ? 1 : -1;
+	const sy = y0 < y1 ? 1 : -1;
+	let err = dx - dy;
+
+	const linePoints: Vec2[] = [];
+	// eslint-disable-next-line no-constant-condition
+	while (true) {
+		//console.log(`(${x0}, ${y0})`);
+
+		linePoints.push({ x: x0, y: y0 });
+		if (x0 === x1 && y0 === y1) break;
+		const e2 = 2 * err;
+		if (e2 > -dy) {
+			err -= dy;
+			x0 += sx;
+		}
+		if (e2 < dx) {
+			err += dx;
+			y0 += sy;
+		}
+	}
+
+	return linePoints;
+}
+
+class MovingAverageFilter {
+	private windowSize: number;
+	private values: number[];
+	private sum: number;
+
+	constructor(windowSize: number) {
+		this.windowSize = windowSize;
+		this.values = [];
+		this.sum = 0;
+	}
+
+	filter(value: number) {
+		this.sum += value;
+		this.values.push(value);
+		if (this.values.length > this.windowSize) {
+			this.sum -= this.values.shift()!;
+		}
+
+		return this.getAverage();
+	}
+
+	getAverage() {
+		return this.sum / this.values.length;
+	}
+}
+
 class LowPassFilter {
 	private alpha: number;
 	private previousOutput: number;
@@ -84,17 +138,21 @@ class PIDController {
 
 const MAX_STEERING_AMOUNT = 1;
 const steeringPID = new PIDController(
-	1.0 / 45,
-	0, //1 / 1000,
-	7 / 1000,
-	1.0 / 3,
+	1.0 / 100,
+	0,
+	1 / 900,
+	1.0 / 1000,
 	MAX_STEERING_AMOUNT
 );
-const targetPositionXLPF = new LowPassFilter(1 / 2, 0);
-const targetPositionYLPF = new LowPassFilter(1 / 2, 0);
+const targetPositionXFilter = new LowPassFilter(0.6, 0);
+const targetPositionYFilter = new LowPassFilter(0.6, 0);
+//const targetPositionXFilter = new MovingAverageFilter(2);
+//const targetPositionYFilter = new MovingAverageFilter(2);
 let previousTimestamp = Date.now();
 let targetCoord: Vec2 = { x: 32, y: 20 };
 let targetPointFiltered = targetCoord;
+let vectorTowardsMiddle: Vec2 = { x: 0, y: 0 };
+let targetBearingDeg = 0;
 
 function preprocess(frame: Frame) {
 	const h = frame.length;
@@ -120,9 +178,34 @@ function preprocess(frame: Frame) {
 	}
 
 	targetPointFiltered = {
-		x: targetPositionXLPF.filter(targetCoord.x),
-		y: targetPositionYLPF.filter(targetCoord.y),
+		x: targetPositionXFilter.filter(targetCoord.x),
+		y: targetPositionYFilter.filter(targetCoord.y),
 	};
+
+	const centerCoordinate: Vec2 = {
+		x: frame[0].length / 2,
+		y: frame.length / 2,
+	};
+	vectorTowardsMiddle = {
+		x: centerCoordinate.x - targetPointFiltered.x,
+		y: centerCoordinate.y - targetPointFiltered.y,
+	};
+	const angleOriginCoordinate: Vec2 = {
+		x: frame[0].length / 2,
+		y: frame.length / 2 + 15,
+	};
+	const angleTowardsTargetRad = Math.atan2(
+		targetPointFiltered.y - angleOriginCoordinate.y,
+		targetPointFiltered.x - angleOriginCoordinate.x
+	);
+	// Calculate bearing towards target, between -180 to 180 deg
+	targetBearingDeg = 90 + angleTowardsTargetRad * (180 / Math.PI);
+	if (targetBearingDeg > 180) {
+		targetBearingDeg -= 360;
+	}
+	if (targetBearingDeg < -180) {
+		targetBearingDeg += 360;
+	}
 
 	// Render raw target
 	for (const arrowOffset of ARROW_SHAPE) {
@@ -136,6 +219,28 @@ function preprocess(frame: Frame) {
 			} catch (e) {
 				console.log(point);
 			}
+		}
+	}
+	const lineEnd: Vec2 = {
+		x: Math.round(
+			angleOriginCoordinate.x + Math.cos(angleTowardsTargetRad) * 8
+		),
+		y: Math.round(
+			angleOriginCoordinate.y + Math.sin(angleTowardsTargetRad) * 8
+		),
+	};
+
+	const linePoints = getLinePoints(
+		angleOriginCoordinate.x,
+		angleOriginCoordinate.y,
+		lineEnd.x,
+		lineEnd.y
+	);
+
+	// Render line representing calculated angle towards turn
+	for (const pt of linePoints) {
+		if (pt.x >= 0 && pt.x < w && pt.y >= 0 && pt.y < h) {
+			processed[pt.y][pt.x] = WHITE;
 		}
 	}
 
@@ -273,34 +378,28 @@ function findTopCenterOfBlob(blob: Pixel[]) {
 }
 
 function decide(frame: Frame) {
-	const centerCoordinate: Vec2 = {
-		x: frame[0].length / 2,
-		y: frame.length / 2,
-	};
-
-	const vectorTowardsMiddle: Vec2 = {
-		x: centerCoordinate.x - targetPointFiltered.x,
-		y: centerCoordinate.y - targetPointFiltered.y,
-	};
-
 	const timeStamp = Date.now();
 	const dt = (timeStamp - previousTimestamp) / 1000;
 	previousTimestamp = timeStamp;
-	let steering = steeringPID.update(vectorTowardsMiddle.x, dt);
+	let steering = steeringPID.update(-targetBearingDeg, dt);
+	/*
 	let throttle =
-		0.03 +
-		0.04 * (1 - Math.min(1, Math.abs(steering) / (0.6 * MAX_STEERING_AMOUNT)));
+		0.02 +
+		0.05 * (1 - Math.min(1, Math.abs(steering) / (0.6 * MAX_STEERING_AMOUNT)));
+		*/
+	let throttle =
+		0.04 +
+		0.06 * (1 - Math.min(1, Math.max(0, Math.abs(targetBearingDeg) / 90)));
 
 	throttle = Math.min(1, Math.max(0, throttle));
 	steering = Math.min(
 		MAX_STEERING_AMOUNT,
 		Math.max(-MAX_STEERING_AMOUNT, steering)
 	);
-
 	return {
 		throttle,
-		vectorTowardsMiddle,
 		steering,
+		targetBearingDeg,
 		pValue: steeringPID.pValue,
 		iValue: steeringPID.iValue,
 		dValue: steeringPID.dValue,
