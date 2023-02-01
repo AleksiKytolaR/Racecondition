@@ -115,18 +115,24 @@ class PIDController {
 	private derivativeFilter: LowPassFilter;
 	private integral = 0;
 	private previousError: number;
-	private maxIntegral: number;
+	private minOutput: number;
+	private maxOutput: number;
+	private minIntegrator: number;
+	private maxIntegrator: number;
 	public derivativeFiltered = 0;
-	public pValue = 0;
-	public dValue = 0;
-	public iValue = 0;
+	public pOut = 0;
+	public dOut = 0;
+	public iOut = 0;
 
 	constructor(
 		kp: number,
 		ki: number,
 		kd: number,
 		derivativeFilterTimeConstant: number,
-		maxIntegral: number
+		minOutput: number,
+		maxOutput: number,
+		minIntegrator: number,
+		maxIntegrator: number
 	) {
 		this.kp = kp;
 		this.ki = ki;
@@ -134,38 +140,68 @@ class PIDController {
 		this.derivativeFilter = new LowPassFilter(derivativeFilterTimeConstant);
 		this.integral = 0;
 		this.previousError = 0;
-		this.maxIntegral = maxIntegral;
+		this.minOutput = minOutput;
+		this.maxOutput = maxOutput;
+		this.minIntegrator = minIntegrator;
+		this.maxIntegrator = maxIntegrator;
 	}
 
 	public update(error: number, dt: number): number {
-		this.integral += error * dt * this.ki;
-		this.integral = Math.max(
-			-this.maxIntegral,
-			Math.min(this.integral, this.maxIntegral)
-		);
 		this.derivativeFiltered = this.derivativeFilter.filter(
 			(error - this.previousError) / dt
 		);
 		this.previousError = error;
-		this.pValue = this.kp * error;
-		this.iValue = this.integral;
-		this.dValue = this.kd * this.derivativeFiltered;
-		return this.pValue + this.iValue + this.dValue;
+		let temp_integrator = this.integral + error * dt * this.ki;
+		if (temp_integrator > this.maxIntegrator) {
+			temp_integrator = this.maxIntegrator;
+		} else if (temp_integrator < this.minIntegrator) {
+			temp_integrator = this.minIntegrator;
+		}
+
+		this.pOut = this.kp * error;
+		this.iOut = temp_integrator;
+		this.dOut = this.kd * this.derivativeFiltered;
+		let output = this.pOut + this.iOut + this.dOut;
+
+		// Output limits and integrator anti-windup
+
+		let integration_allowed = true;
+		if (output > this.maxOutput) {
+			output = this.maxOutput;
+			console.log('Max', this.maxOutput);
+			if (error > 0) {
+				integration_allowed = false;
+			}
+		} else if (output < this.minOutput) {
+			output = this.minOutput;
+			console.log('Min', this.minOutput);
+			if (error < 0) {
+				integration_allowed = false;
+			}
+		}
+		if (integration_allowed) {
+			this.integral = temp_integrator;
+		}
+
+		return output;
 	}
 }
 
 const MAX_STEERING_AMOUNT = 1;
 const steeringPID = new PIDController(
-	1.0 / 75,
-	0,
-	1 / 370,
-	0.5,
-	MAX_STEERING_AMOUNT
+	1.0 / 120,
+	1.0 / 130,
+	1 / 1300,
+	1 / 20,
+	-MAX_STEERING_AMOUNT,
+	MAX_STEERING_AMOUNT,
+	-MAX_STEERING_AMOUNT * 0.1,
+	MAX_STEERING_AMOUNT * 0.1
 );
 const throttleAverageTracker = new MovingAverageFilter(4);
-const targetPositionXFilter = new LowPassFilter(1 / 2, 0);
-const targetPositionYFilter = new LowPassFilter(1 / 2, 0);
-const throttleFilter = new LowPassFilter(1 / 3, 0);
+const targetPositionXFilter = new LowPassFilter(0.8, 32);
+const targetPositionYFilter = new LowPassFilter(0.8, 20);
+const throttleFilter = new LowPassFilter(1, 0);
 //const targetPositionXFilter = new MovingAverageFilter(2);
 //const targetPositionYFilter = new MovingAverageFilter(2);
 let previousTimestamp = Date.now();
@@ -181,7 +217,7 @@ function preprocess(frame: Frame) {
 
 	const processed = frame.map((row, y) =>
 		row.map((pixel, x) => {
-			if (y < 12) return PURPLE;
+			if (y < 14) return PURPLE;
 			if (pixel.r - Math.max(pixel.g, pixel.b) > threshold) return RED;
 			if (pixel.g - Math.max(pixel.r, pixel.b) > threshold) return GREEN;
 			if (pixel.b - Math.max(pixel.g, pixel.r) > threshold) return BLUE;
@@ -205,7 +241,9 @@ function preprocess(frame: Frame) {
 
 	if (middleBlob) {
 		// If blob found, use new detected tip. Otherwise use previous value
-		targetCoord = findTopCenterOfBlob(middleBlob);
+		targetCoord = findTipOfBlob(middleBlob);
+	} else {
+		//targetCoord.y += 1;
 	}
 
 	targetPointFiltered = {
@@ -223,7 +261,7 @@ function preprocess(frame: Frame) {
 	};
 	const angleOriginCoordinate: Vec2 = {
 		x: frame[0].length / 2,
-		y: frame.length / 2 + 45,
+		y: frame.length / 2 + 20,
 	};
 	const angleTowardsTargetRad = Math.atan2(
 		targetPointFiltered.y - angleOriginCoordinate.y,
@@ -254,10 +292,10 @@ function preprocess(frame: Frame) {
 	}
 	const lineEnd: Vec2 = {
 		x: Math.round(
-			angleOriginCoordinate.x + Math.cos(angleTowardsTargetRad) * 35
+			angleOriginCoordinate.x + Math.cos(angleTowardsTargetRad) * 55
 		),
 		y: Math.round(
-			angleOriginCoordinate.y + Math.sin(angleTowardsTargetRad) * 35
+			angleOriginCoordinate.y + Math.sin(angleTowardsTargetRad) * 55
 		),
 	};
 
@@ -310,7 +348,6 @@ function detectBlobs(frame: Frame, minBlobSize = 20) {
 		if (blob.length < minBlobSize) continue;
 		blobs.push(blob);
 	}
-	console.log('Count: ', count);
 	return blobs;
 }
 
@@ -421,8 +458,8 @@ function decide(frame: Frame) {
 	let steering = steeringPID.update(-targetBearingDeg, dt);
 
 	let throttle =
-		0.08 +
-		0.14 * (1 - Math.min(1, Math.abs(steering) / (0.25 * MAX_STEERING_AMOUNT)));
+		0.105 +
+		0.09 * (1 - Math.min(1, Math.abs(steering) / (0.25 * MAX_STEERING_AMOUNT)));
 
 	throttle = Math.min(1, Math.max(0, throttle));
 	const throttleFiltered = throttleFilter.filter(throttle);
@@ -439,9 +476,9 @@ function decide(frame: Frame) {
 		//estSpeed,
 		steering,
 		targetBearingDeg,
-		pValue: steeringPID.pValue,
-		iValue: steeringPID.iValue,
-		dValue: steeringPID.dValue,
+		pValue: steeringPID.pOut,
+		iValue: steeringPID.iOut,
+		dValue: steeringPID.dOut,
 		dt,
 	};
 }
