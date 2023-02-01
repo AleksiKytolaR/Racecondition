@@ -10,7 +10,9 @@ const GREEN: Color = { r: 0, g: 255, b: 0 };
 const BLUE: Color = { r: 0, g: 0, b: 255 };
 const WHITE: Color = { r: 255, g: 255, b: 255 };
 const GRAY: Color = { r: 100, g: 100, b: 100 };
+const PURPLE: Color = { r: 148, g: 0, b: 211 };
 const BLACK: Color = { r: 0, g: 0, b: 0 };
+const COLORS = [RED, GREEN, BLUE, BLACK];
 
 const ARROW_SHAPE: Vec2[] = [
 	{ x: 0, y: -2 },
@@ -19,6 +21,22 @@ const ARROW_SHAPE: Vec2[] = [
 	{ x: 0, y: -5 },
 	{ x: 0, y: -6 },
 ];
+
+function getClosestColor(c: Color) {
+	let closestDist = 9999999999;
+	let closest = COLORS[0];
+	for (const color of COLORS) {
+		const sqrDist =
+			Math.pow(color.r - c.r, 2) +
+			Math.pow(color.g - c.g, 2) +
+			Math.pow(color.b - c.b, 2);
+		if (sqrDist < closestDist) {
+			closest = color;
+			closestDist = sqrDist;
+		}
+	}
+	return closest;
+}
 
 function getLinePoints(x0: number, y0: number, x1: number, y1: number) {
 	const dx = Math.abs(x1 - x0);
@@ -140,10 +158,11 @@ const MAX_STEERING_AMOUNT = 1;
 const steeringPID = new PIDController(
 	1.0 / 75,
 	0,
-	1 / 550,
+	1 / 370,
 	0.5,
 	MAX_STEERING_AMOUNT
 );
+const throttleAverageTracker = new MovingAverageFilter(4);
 const targetPositionXFilter = new LowPassFilter(1 / 2, 0);
 const targetPositionYFilter = new LowPassFilter(1 / 2, 0);
 const throttleFilter = new LowPassFilter(1 / 3, 0);
@@ -159,14 +178,25 @@ function preprocess(frame: Frame) {
 	const h = frame.length;
 	const w = frame[0].length;
 	const threshold = 10;
+
 	const processed = frame.map((row, y) =>
 		row.map((pixel, x) => {
+			if (y < 12) return PURPLE;
 			if (pixel.r - Math.max(pixel.g, pixel.b) > threshold) return RED;
 			if (pixel.g - Math.max(pixel.r, pixel.b) > threshold) return GREEN;
 			if (pixel.b - Math.max(pixel.g, pixel.r) > threshold) return BLUE;
-			return BLACK;
+			return getClosestColor(pixel);
 		})
 	);
+
+	/*
+	const processed = frame.map((row, y) =>
+		row.map((pixel, x) => {
+			if (y < 10) return BLACK;
+			return getClosestColor(pixel);
+		})
+	);
+	*/
 
 	const blobs = detectBlobs(processed);
 	const middleBlob = blobs
@@ -175,7 +205,7 @@ function preprocess(frame: Frame) {
 
 	if (middleBlob) {
 		// If blob found, use new detected tip. Otherwise use previous value
-		targetCoord = findTipOfBlob(middleBlob);
+		targetCoord = findTopCenterOfBlob(middleBlob);
 	}
 
 	targetPointFiltered = {
@@ -193,7 +223,7 @@ function preprocess(frame: Frame) {
 	};
 	const angleOriginCoordinate: Vec2 = {
 		x: frame[0].length / 2,
-		y: frame.length / 2 + 42,
+		y: frame.length / 2 + 45,
 	};
 	const angleTowardsTargetRad = Math.atan2(
 		targetPointFiltered.y - angleOriginCoordinate.y,
@@ -224,10 +254,10 @@ function preprocess(frame: Frame) {
 	}
 	const lineEnd: Vec2 = {
 		x: Math.round(
-			angleOriginCoordinate.x + Math.cos(angleTowardsTargetRad) * 30
+			angleOriginCoordinate.x + Math.cos(angleTowardsTargetRad) * 35
 		),
 		y: Math.round(
-			angleOriginCoordinate.y + Math.sin(angleTowardsTargetRad) * 30
+			angleOriginCoordinate.y + Math.sin(angleTowardsTargetRad) * 35
 		),
 	};
 
@@ -270,14 +300,17 @@ function detectBlobs(frame: Frame, minBlobSize = 20) {
 	const h = frame.length;
 	const w = frame[0].length;
 	const blobs: Pixel[][] = [];
-	const pixelList = frameToPixelList(frame);
+	const pixelList = frameToColoredPixelsList(frame);
 
+	let count = 0;
 	while (pixelList.length > 0) {
 		const current = pixelList[0];
+		count++;
 		const blob = detectBlobFromPoint(pixelList, current);
 		if (blob.length < minBlobSize) continue;
 		blobs.push(blob);
 	}
+	console.log('Count: ', count);
 	return blobs;
 }
 
@@ -291,7 +324,8 @@ function detectBlobFromPoint(pixelList: PixelList, fromPixel: Pixel) {
 		const currentPixel = open.values().next().value;
 		open.delete(currentPixel);
 
-		if (blob.size == 0 || sameColor(currentPixel, blobColor)) {
+		const matches = blob.size == 0 || sameColor(currentPixel, blobColor);
+		if (matches) {
 			blob.add(currentPixel);
 			pixelList.splice(
 				pixelList.findIndex((pix) => pix === currentPixel),
@@ -314,13 +348,15 @@ function detectBlobFromPoint(pixelList: PixelList, fromPixel: Pixel) {
 	return Array.from(blob);
 }
 
-function frameToPixelList(frame: Frame) {
+function frameToColoredPixelsList(frame: Frame) {
 	const pixelList: PixelList = [];
 	const h = frame.length;
 	const w = frame[0].length;
 
 	for (let x = 0; x < w; x++) {
 		for (let y = 0; y < h; y++) {
+			if (sameColor(frame[y][x], PURPLE) || sameColor(frame[y][x], BLACK))
+				continue;
 			pixelList.push({ ...frame[y][x], x, y });
 		}
 	}
@@ -388,22 +424,19 @@ function decide(frame: Frame) {
 		0.08 +
 		0.14 * (1 - Math.min(1, Math.abs(steering) / (0.25 * MAX_STEERING_AMOUNT)));
 
-	/*
-	let throttle =
-		0.045 +
-		0.06 *
-			(1 -
-				Math.pow(Math.min(1, Math.max(0, Math.abs(targetBearingDeg) / 90)), 2));
-
-				*/
 	throttle = Math.min(1, Math.max(0, throttle));
 	const throttleFiltered = throttleFilter.filter(throttle);
 	steering = Math.min(
 		MAX_STEERING_AMOUNT,
 		Math.max(-MAX_STEERING_AMOUNT, steering)
 	);
+	//throttleAverageTracker.filter(throttleFiltered);
+	//const estSpeed = throttleAverageTracker.getAverage() * 1550;
+	//const steerReduction = 0.3 * Math.min(1, Math.max(0, (estSpeed - 140) / 40));
+	//steering *= 1 - steerReduction;
 	return {
 		throttle: throttleFiltered,
+		//estSpeed,
 		steering,
 		targetBearingDeg,
 		pValue: steeringPID.pValue,
