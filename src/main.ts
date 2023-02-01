@@ -189,18 +189,18 @@ class PIDController {
 
 const MAX_STEERING_AMOUNT = 1;
 const steeringPID = new PIDController(
-	1.0 / 120,
-	1.0 / 130,
-	1 / 1300,
+	1.0 / 100,
+	0, //1.0 / 110,
+	1 / 1500,
 	1 / 20,
 	-MAX_STEERING_AMOUNT,
 	MAX_STEERING_AMOUNT,
-	-MAX_STEERING_AMOUNT * 0.1,
-	MAX_STEERING_AMOUNT * 0.1
+	-MAX_STEERING_AMOUNT * 0.2,
+	MAX_STEERING_AMOUNT * 0.2
 );
-const throttleAverageTracker = new MovingAverageFilter(4);
-const targetPositionXFilter = new LowPassFilter(0.8, 32);
-const targetPositionYFilter = new LowPassFilter(0.8, 20);
+const throttleAverageTracker = new MovingAverageFilter(8);
+const targetPositionXFilter = new LowPassFilter(0.6, 32);
+const targetPositionYFilter = new LowPassFilter(0.6, 20);
 const throttleFilter = new LowPassFilter(1, 0);
 //const targetPositionXFilter = new MovingAverageFilter(2);
 //const targetPositionYFilter = new MovingAverageFilter(2);
@@ -210,6 +210,12 @@ let targetPointFiltered = targetCoord;
 let vectorTowardsMiddle: Vec2 = { x: 0, y: 0 };
 let targetBearingDeg = 0;
 
+function findTarget(middleBlob: Pixel[]) {
+	const tip = findTipOfBlob(middleBlob);
+	const middle = findTopCenterOfBlob(middleBlob);
+	return { x: (tip.x + middle.x) / 2, y: (tip.y + middle.y) / 2 };
+}
+
 function preprocess(frame: Frame) {
 	const h = frame.length;
 	const w = frame[0].length;
@@ -217,22 +223,13 @@ function preprocess(frame: Frame) {
 
 	const processed = frame.map((row, y) =>
 		row.map((pixel, x) => {
-			if (y < 14) return PURPLE;
+			if (y < 13) return PURPLE;
 			if (pixel.r - Math.max(pixel.g, pixel.b) > threshold) return RED;
 			if (pixel.g - Math.max(pixel.r, pixel.b) > threshold) return GREEN;
 			if (pixel.b - Math.max(pixel.g, pixel.r) > threshold) return BLUE;
 			return getClosestColor(pixel);
 		})
 	);
-
-	/*
-	const processed = frame.map((row, y) =>
-		row.map((pixel, x) => {
-			if (y < 10) return BLACK;
-			return getClosestColor(pixel);
-		})
-	);
-	*/
 
 	const blobs = detectBlobs(processed);
 	const middleBlob = blobs
@@ -241,9 +238,9 @@ function preprocess(frame: Frame) {
 
 	if (middleBlob) {
 		// If blob found, use new detected tip. Otherwise use previous value
-		targetCoord = findTipOfBlob(middleBlob);
+		targetCoord = findTarget(middleBlob);
 	} else {
-		//targetCoord.y += 1;
+		targetCoord.y += 1;
 	}
 
 	targetPointFiltered = {
@@ -458,8 +455,8 @@ function decide(frame: Frame) {
 	let steering = steeringPID.update(-targetBearingDeg, dt);
 
 	let throttle =
-		0.105 +
-		0.09 * (1 - Math.min(1, Math.abs(steering) / (0.25 * MAX_STEERING_AMOUNT)));
+		0.098 +
+		0.21 * (1 - Math.min(1, Math.abs(steering) / (0.35 * MAX_STEERING_AMOUNT)));
 
 	throttle = Math.min(1, Math.max(0, throttle));
 	const throttleFiltered = throttleFilter.filter(throttle);
@@ -467,13 +464,13 @@ function decide(frame: Frame) {
 		MAX_STEERING_AMOUNT,
 		Math.max(-MAX_STEERING_AMOUNT, steering)
 	);
-	//throttleAverageTracker.filter(throttleFiltered);
-	//const estSpeed = throttleAverageTracker.getAverage() * 1550;
-	//const steerReduction = 0.3 * Math.min(1, Math.max(0, (estSpeed - 140) / 40));
+	throttleAverageTracker.filter(throttleFiltered);
+	const estSpeed = throttleAverageTracker.getAverage() * 1550;
+	//const steerReduction = 0.6 * Math.min(1, Math.max(0, (estSpeed - 190) / 70));
 	//steering *= 1 - steerReduction;
 	return {
 		throttle: throttleFiltered,
-		//estSpeed,
+		estSpeed,
 		steering,
 		targetBearingDeg,
 		pValue: steeringPID.pOut,
