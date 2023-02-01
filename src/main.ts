@@ -189,19 +189,19 @@ class PIDController {
 
 const MAX_STEERING_AMOUNT = 1;
 const steeringPID = new PIDController(
-	1.0 / 100,
+	1.0 / 130,
 	0, //1.0 / 110,
-	1 / 1500,
-	1 / 20,
+	1 / 5000,
+	1 / 10,
 	-MAX_STEERING_AMOUNT,
 	MAX_STEERING_AMOUNT,
-	-MAX_STEERING_AMOUNT * 0.2,
-	MAX_STEERING_AMOUNT * 0.2
+	-MAX_STEERING_AMOUNT * 0.25,
+	MAX_STEERING_AMOUNT * 0.25
 );
 const throttleAverageTracker = new MovingAverageFilter(8);
-const targetPositionXFilter = new LowPassFilter(0.6, 32);
-const targetPositionYFilter = new LowPassFilter(0.6, 20);
-const throttleFilter = new LowPassFilter(1, 0);
+const targetPositionXFilter = new LowPassFilter(1, 32);
+const targetPositionYFilter = new LowPassFilter(1, 20);
+const throttleFilter = new LowPassFilter(1 / 10, 0);
 //const targetPositionXFilter = new MovingAverageFilter(2);
 //const targetPositionYFilter = new MovingAverageFilter(2);
 let previousTimestamp = Date.now();
@@ -258,7 +258,7 @@ function preprocess(frame: Frame) {
 	};
 	const angleOriginCoordinate: Vec2 = {
 		x: frame[0].length / 2,
-		y: frame.length / 2 + 20,
+		y: frame.length / 2 + 10,
 	};
 	const angleTowardsTargetRad = Math.atan2(
 		targetPointFiltered.y - angleOriginCoordinate.y,
@@ -331,11 +331,11 @@ function sameColor(x: Color, y: Color) {
 	return x.r === y.r && x.g === y.g && x.b === y.b;
 }
 
-function detectBlobs(frame: Frame, minBlobSize = 20) {
+function detectBlobs(frame: Frame, minBlobSize = 35) {
 	const h = frame.length;
 	const w = frame[0].length;
 	const blobs: Pixel[][] = [];
-	const pixelList = frameToColoredPixelsList(frame);
+	const pixelList = frameToBluePixelList(frame);
 
 	let count = 0;
 	while (pixelList.length > 0) {
@@ -382,15 +382,14 @@ function detectBlobFromPoint(pixelList: PixelList, fromPixel: Pixel) {
 	return Array.from(blob);
 }
 
-function frameToColoredPixelsList(frame: Frame) {
+function frameToBluePixelList(frame: Frame) {
 	const pixelList: PixelList = [];
 	const h = frame.length;
 	const w = frame[0].length;
 
 	for (let x = 0; x < w; x++) {
 		for (let y = 0; y < h; y++) {
-			if (sameColor(frame[y][x], PURPLE) || sameColor(frame[y][x], BLACK))
-				continue;
+			if (!sameColor(frame[y][x], BLUE)) continue;
 			pixelList.push({ ...frame[y][x], x, y });
 		}
 	}
@@ -456,7 +455,7 @@ function decide(frame: Frame) {
 
 	let throttle =
 		0.098 +
-		0.21 * (1 - Math.min(1, Math.abs(steering) / (0.35 * MAX_STEERING_AMOUNT)));
+		0.21 * (1 - Math.min(1, Math.abs(steering) / (0.42 * MAX_STEERING_AMOUNT)));
 
 	throttle = Math.min(1, Math.max(0, throttle));
 	const throttleFiltered = throttleFilter.filter(throttle);
