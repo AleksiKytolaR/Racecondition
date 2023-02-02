@@ -9,10 +9,9 @@ const RED: Color = { r: 255, g: 0, b: 0 };
 const GREEN: Color = { r: 0, g: 255, b: 0 };
 const BLUE: Color = { r: 0, g: 0, b: 255 };
 const WHITE: Color = { r: 255, g: 255, b: 255 };
-const GRAY: Color = { r: 100, g: 100, b: 100 };
+const GRAY: Color = { r: 122, g: 122, b: 122 };
 const PURPLE: Color = { r: 148, g: 0, b: 211 };
 const BLACK: Color = { r: 0, g: 0, b: 0 };
-const COLORS = [RED, GREEN, BLUE, BLACK];
 
 const ARROW_SHAPE: Vec2[] = [
 	{ x: 0, y: -2 },
@@ -21,22 +20,6 @@ const ARROW_SHAPE: Vec2[] = [
 	{ x: 0, y: -5 },
 	{ x: 0, y: -6 },
 ];
-
-function getClosestColor(c: Color) {
-	let closestDist = 9999999999;
-	let closest = COLORS[0];
-	for (const color of COLORS) {
-		const sqrDist =
-			Math.pow(color.r - c.r, 2) +
-			Math.pow(color.g - c.g, 2) +
-			Math.pow(color.b - c.b, 2);
-		if (sqrDist < closestDist) {
-			closest = color;
-			closestDist = sqrDist;
-		}
-	}
-	return closest;
-}
 
 function getLinePoints(x0: number, y0: number, x1: number, y1: number) {
 	const dx = Math.abs(x1 - x0);
@@ -48,8 +31,6 @@ function getLinePoints(x0: number, y0: number, x1: number, y1: number) {
 	const linePoints: Vec2[] = [];
 	// eslint-disable-next-line no-constant-condition
 	while (true) {
-		//console.log(`(${x0}, ${y0})`);
-
 		linePoints.push({ x: x0, y: y0 });
 		if (x0 === x1 && y0 === y1) break;
 		const e2 = 2 * err;
@@ -187,144 +168,22 @@ class PIDController {
 	}
 }
 
-const MAX_STEERING_AMOUNT = 1;
-const steeringPID = new PIDController(
-	1.0 / 130,
-	0, //1.0 / 110,
-	1 / 5000,
-	1 / 10,
-	-MAX_STEERING_AMOUNT,
-	MAX_STEERING_AMOUNT,
-	-MAX_STEERING_AMOUNT * 0.25,
-	MAX_STEERING_AMOUNT * 0.25
-);
-const throttleAverageTracker = new MovingAverageFilter(8);
-const targetPositionXFilter = new LowPassFilter(1, 32);
-const targetPositionYFilter = new LowPassFilter(1, 20);
-const throttleFilter = new LowPassFilter(1 / 10, 0);
-//const targetPositionXFilter = new MovingAverageFilter(2);
-//const targetPositionYFilter = new MovingAverageFilter(2);
-let previousTimestamp = Date.now();
-let targetCoord: Vec2 = { x: 32, y: 20 };
-let targetPointFiltered = targetCoord;
-let vectorTowardsMiddle: Vec2 = { x: 0, y: 0 };
-let targetBearingDeg = 0;
-
-function findTarget(middleBlob: Pixel[]) {
-	const tip = findTipOfBlob(middleBlob);
+function findTargetPoint(middleBlob: Pixel[]) {
+	// Try to follow driving lines by moving to left when anticipating a right turn next etc.
+	let mode: 'LEFT' | 'RIGHT' | 'FURTHEST_FROM_CENTER' = 'FURTHEST_FROM_CENTER';
+	if (predTurns && predTurns[0].duration - timeSpentInCurrentTurn > 0.6) {
+		if (predTurns[0].turn == 'S' && predTurns[1].turn == 'R') {
+			mode = 'LEFT';
+		}
+		if (predTurns[0].turn == 'S' && predTurns[1].turn == 'L') {
+			mode = 'RIGHT';
+		}
+	}
+	const tip = findTipOfBlob(middleBlob, mode);
 	const middle = findTopCenterOfBlob(middleBlob);
-	return { x: (tip.x + middle.x) / 2, y: (tip.y + middle.y) / 2 };
-}
+	return { x: tip.x * 0.6 + middle.x * 0.4, y: tip.y * 0.6 + middle.y * 0.4 };
 
-function preprocess(frame: Frame) {
-	const h = frame.length;
-	const w = frame[0].length;
-	const threshold = 10;
-
-	const processed = frame.map((row, y) =>
-		row.map((pixel, x) => {
-			if (y < 13) return PURPLE;
-			if (pixel.r - Math.max(pixel.g, pixel.b) > threshold) return RED;
-			if (pixel.g - Math.max(pixel.r, pixel.b) > threshold) return GREEN;
-			if (pixel.b - Math.max(pixel.g, pixel.r) > threshold) return BLUE;
-			return getClosestColor(pixel);
-		})
-	);
-
-	const blobs = detectBlobs(processed);
-	const middleBlob = blobs
-		.filter((blob) => sameColor(blob[0], BLUE))
-		.sort((a, b) => a.length - b.length)[0];
-
-	if (middleBlob) {
-		// If blob found, use new detected tip. Otherwise use previous value
-		targetCoord = findTarget(middleBlob);
-	} else {
-		targetCoord.y += 1;
-	}
-
-	targetPointFiltered = {
-		x: targetPositionXFilter.filter(targetCoord.x),
-		y: targetPositionYFilter.filter(targetCoord.y),
-	};
-
-	const centerCoordinate: Vec2 = {
-		x: frame[0].length / 2,
-		y: frame.length / 2,
-	};
-	vectorTowardsMiddle = {
-		x: centerCoordinate.x - targetPointFiltered.x,
-		y: centerCoordinate.y - targetPointFiltered.y,
-	};
-	const angleOriginCoordinate: Vec2 = {
-		x: frame[0].length / 2,
-		y: frame.length / 2 + 10,
-	};
-	const angleTowardsTargetRad = Math.atan2(
-		targetPointFiltered.y - angleOriginCoordinate.y,
-		targetPointFiltered.x - angleOriginCoordinate.x
-	);
-	// Calculate bearing towards target, between -180 to 180 deg
-	targetBearingDeg = 90 + angleTowardsTargetRad * (180 / Math.PI);
-	if (targetBearingDeg > 180) {
-		targetBearingDeg -= 360;
-	}
-	if (targetBearingDeg < -180) {
-		targetBearingDeg += 360;
-	}
-
-	// Render raw target
-	for (const arrowOffset of ARROW_SHAPE) {
-		const point: Vec2 = {
-			x: Math.round(targetCoord.x + arrowOffset.x),
-			y: Math.round(targetCoord.y + arrowOffset.y),
-		};
-		if (point.x >= 0 && point.x < w && point.y >= 0 && point.y < h) {
-			try {
-				processed[point.y][point.x] = GRAY;
-			} catch (e) {
-				console.log(point);
-			}
-		}
-	}
-	const lineEnd: Vec2 = {
-		x: Math.round(
-			angleOriginCoordinate.x + Math.cos(angleTowardsTargetRad) * 55
-		),
-		y: Math.round(
-			angleOriginCoordinate.y + Math.sin(angleTowardsTargetRad) * 55
-		),
-	};
-
-	const linePoints = getLinePoints(
-		angleOriginCoordinate.x,
-		angleOriginCoordinate.y,
-		lineEnd.x,
-		lineEnd.y
-	);
-
-	// Render line representing calculated angle towards turn
-	for (const pt of linePoints) {
-		if (pt.x >= 0 && pt.x < w && pt.y >= 0 && pt.y < h) {
-			processed[pt.y][pt.x] = WHITE;
-		}
-	}
-
-	// Render filtered target
-	for (const arrowOffset of ARROW_SHAPE) {
-		const point: Vec2 = {
-			x: Math.round(targetPointFiltered.x + arrowOffset.x),
-			y: Math.round(targetPointFiltered.y + arrowOffset.y),
-		};
-		if (point.x >= 0 && point.x < w && point.y >= 0 && point.y < h) {
-			try {
-				processed[point.y][point.x] = WHITE;
-			} catch (e) {
-				console.log(point);
-			}
-		}
-	}
-	return processed;
+	//return { x: (tip.x + middle.x) / 2, y: (tip.y + middle.y) / 2 };
 }
 
 function sameColor(x: Color, y: Color) {
@@ -397,14 +256,19 @@ function frameToBluePixelList(frame: Frame) {
 	return pixelList;
 }
 
-function findTipOfBlob(blob: Pixel[]) {
+function findTipOfBlob(
+	blob: Pixel[],
+	mode: 'LEFT' | 'RIGHT' | 'FURTHEST_FROM_CENTER'
+) {
 	const blobAverageCoordinate: Vec2 = { x: 0, y: 0 };
-	for (const pix of blob) {
-		blobAverageCoordinate.x += pix.x;
-		blobAverageCoordinate.y += pix.y;
+	if (mode === 'FURTHEST_FROM_CENTER') {
+		for (const pix of blob) {
+			blobAverageCoordinate.x += pix.x;
+			blobAverageCoordinate.y += pix.y;
+		}
+		blobAverageCoordinate.x /= blob.length;
+		blobAverageCoordinate.y /= blob.length;
 	}
-	blobAverageCoordinate.x /= blob.length;
-	blobAverageCoordinate.y /= blob.length;
 
 	let tip: Pixel = blob[0];
 	for (const pix of blob) {
@@ -412,14 +276,19 @@ function findTipOfBlob(blob: Pixel[]) {
 		if (pix.y - tip.y <= -3) {
 			tip = pix;
 			continue;
-		} else if (
-			// Second choose highest distance from blob average X coord
-			Math.abs(pix.x - blobAverageCoordinate.x) >
-				Math.abs(tip.x - blobAverageCoordinate.x) &&
-			pix.y - tip.y <= 0
-		) {
-			tip = pix;
-			continue;
+		} else {
+			if (
+				mode == 'FURTHEST_FROM_CENTER' &&
+				Math.abs(pix.x - blobAverageCoordinate.x) >
+					Math.abs(tip.x - blobAverageCoordinate.x) &&
+				pix.y - tip.y <= 0
+			) {
+				tip = pix;
+			} else if (mode == 'LEFT' && pix.x < tip.x) {
+				tip = pix;
+			} else if (mode == 'RIGHT' && pix.x > tip.x) {
+				tip = pix;
+			}
 		}
 	}
 	return tip;
@@ -447,6 +316,216 @@ function findTopCenterOfBlob(blob: Pixel[]) {
 	return averageTopCoordinate;
 }
 
+let currentTurn = 'S';
+let detectedTurn = 'S';
+interface TurnHistoryEntry {
+	turn: string;
+	duration: number;
+}
+const turnHistory: TurnHistoryEntry[] = [];
+let timeSpentInDetectedTurn = 0;
+let timeSpentInCurrentTurn = 0;
+function turningTracker(steering: number, dt: number) {
+	const avgSteer = avgSteerTracker.filter(steering);
+	const previousDetectedTurn = detectedTurn;
+	detectedTurn = 'S';
+	if (avgSteer > TURN_DETECTION_STEER_THRESHOLD) {
+		detectedTurn = 'L';
+	} else if (avgSteer < -TURN_DETECTION_STEER_THRESHOLD) {
+		detectedTurn = 'R';
+	}
+	if (previousDetectedTurn === detectedTurn) {
+		timeSpentInDetectedTurn += dt;
+	} else {
+		timeSpentInDetectedTurn = 0;
+	}
+
+	timeSpentInCurrentTurn += dt;
+	if (
+		timeSpentInDetectedTurn > TURN_DETECTION_TIME_TRESHOLD &&
+		currentTurn !== detectedTurn
+	) {
+		// "Actual" new turn detected, no noise here
+		turnHistory.push({
+			turn: currentTurn,
+			duration: timeSpentInCurrentTurn,
+		});
+		if (turnHistory.length > TURN_HISTORY_LENGTH) {
+			turnHistory.shift();
+		}
+		timeSpentInCurrentTurn = 0;
+		currentTurn = detectedTurn;
+	}
+
+	return currentTurn;
+}
+
+function predictTurnsViaHistory() {
+	if (turnHistory.length < 12) return null;
+	const prevTurns = turnHistory.slice(-5);
+
+	for (let i = 0; i < turnHistory.length - 5; i++) {
+		let matches = true;
+		for (let j = 0; j < prevTurns.length; j++) {
+			if (turnHistory[i + j].turn !== prevTurns[j].turn) {
+				matches = false;
+				break;
+			}
+		}
+
+		if (matches) {
+			return [
+				turnHistory[i + prevTurns.length],
+				turnHistory[i + prevTurns.length + 1],
+			];
+		}
+	}
+
+	return null;
+}
+
+const MAX_STEERING_AMOUNT = 1;
+const THROTTLE_BASE = 0.095;
+const THROTTLE_INCREMENT = 0.21;
+const THROTTLE_INCREMENT_STEER_DROPOFF_RANGE = 0.42;
+const KP = 1 / 120;
+const KI = 0;
+const KD = 1 / 6000;
+const D_LOWPASS_TC = 1 / 10;
+const INTEGRATOR_MAX_FACTOR = 0.25;
+const TARGET_POSITION_LPF_TC = 1;
+const THROTTLE_LPF_TC = 1 / 10;
+const ANGLE_CALCULATION_COORDINATE_HEIGHT = 10;
+const targetPositionXFilter = new LowPassFilter(TARGET_POSITION_LPF_TC, 32);
+const targetPositionYFilter = new LowPassFilter(TARGET_POSITION_LPF_TC, 20);
+const throttleFilter = new LowPassFilter(THROTTLE_LPF_TC, 0);
+const TURN_DETECTION_STEER_THRESHOLD = 0.3;
+const TURN_DETECTION_AVG_FILTER_WINDOW = 6;
+const TURN_DETECTION_TIME_TRESHOLD = 0.2;
+const TURN_HISTORY_LENGTH = 30;
+
+const steeringPID = new PIDController(
+	KP,
+	KI,
+	KD,
+	D_LOWPASS_TC,
+	-MAX_STEERING_AMOUNT,
+	MAX_STEERING_AMOUNT,
+	-MAX_STEERING_AMOUNT * INTEGRATOR_MAX_FACTOR,
+	MAX_STEERING_AMOUNT * INTEGRATOR_MAX_FACTOR
+);
+
+const avgThrottleTracker = new MovingAverageFilter(6);
+const avgSteerTracker = new MovingAverageFilter(6);
+let previousTimestamp = Date.now();
+let targetCoord: Vec2 = { x: 32, y: 20 };
+let targetPointFiltered = targetCoord;
+let targetBearingDeg = 0;
+let predTurns: TurnHistoryEntry[] | null = null;
+
+function preprocess(frame: Frame) {
+	const h = frame.length;
+	const w = frame[0].length;
+	const threshold = 10;
+
+	const processed = frame.map((row, y) =>
+		row.map((pixel, x) => {
+			if (y < 13) return PURPLE;
+			if (pixel.r - Math.max(pixel.g, pixel.b) > threshold) return RED;
+			if (pixel.g - Math.max(pixel.r, pixel.b) > threshold) return GREEN;
+			if (pixel.b - Math.max(pixel.g, pixel.r) > threshold) return BLUE;
+			return BLACK;
+		})
+	);
+
+	const blobs = detectBlobs(processed);
+	const middleBlob = blobs
+		.filter((blob) => sameColor(blob[0], BLUE))
+		.sort((a, b) => a.length - b.length)[0];
+
+	if (middleBlob) {
+		// If blob found, use new detected tip. Otherwise use previous value
+		targetCoord = findTargetPoint(middleBlob);
+	} else {
+		targetCoord.y += 1;
+	}
+
+	targetPointFiltered = {
+		x: targetPositionXFilter.filter(targetCoord.x),
+		y: targetPositionYFilter.filter(targetCoord.y),
+	};
+
+	const angleOriginCoordinate: Vec2 = {
+		x: frame[0].length / 2,
+		y: frame.length - ANGLE_CALCULATION_COORDINATE_HEIGHT,
+	};
+	const angleTowardsTargetRad = Math.atan2(
+		targetPointFiltered.y - angleOriginCoordinate.y,
+		targetPointFiltered.x - angleOriginCoordinate.x
+	);
+	// Calculate bearing towards target, between -180 to 180 deg
+	targetBearingDeg = 90 + angleTowardsTargetRad * (180 / Math.PI);
+	if (targetBearingDeg > 180) {
+		targetBearingDeg -= 360;
+	}
+	if (targetBearingDeg < -180) {
+		targetBearingDeg += 360;
+	}
+
+	// Render raw non-LPF target
+	for (const arrowOffset of ARROW_SHAPE) {
+		const point: Vec2 = {
+			x: Math.round(targetCoord.x + arrowOffset.x),
+			y: Math.round(targetCoord.y + arrowOffset.y),
+		};
+		if (point.x >= 0 && point.x < w && point.y >= 0 && point.y < h) {
+			try {
+				processed[point.y][point.x] = GRAY;
+			} catch (e) {
+				console.log(point);
+			}
+		}
+	}
+	const lineEnd: Vec2 = {
+		x: Math.round(
+			angleOriginCoordinate.x + Math.cos(angleTowardsTargetRad) * 55
+		),
+		y: Math.round(
+			angleOriginCoordinate.y + Math.sin(angleTowardsTargetRad) * 55
+		),
+	};
+
+	const linePoints = getLinePoints(
+		angleOriginCoordinate.x,
+		angleOriginCoordinate.y,
+		lineEnd.x,
+		lineEnd.y
+	);
+
+	// Render line representing calculated angle towards turn
+	for (const pt of linePoints) {
+		if (pt.x >= 0 && pt.x < w && pt.y >= 0 && pt.y < h) {
+			processed[pt.y][pt.x] = WHITE;
+		}
+	}
+
+	// Render filtered target
+	for (const arrowOffset of ARROW_SHAPE) {
+		const point: Vec2 = {
+			x: Math.round(targetPointFiltered.x + arrowOffset.x),
+			y: Math.round(targetPointFiltered.y + arrowOffset.y),
+		};
+		if (point.x >= 0 && point.x < w && point.y >= 0 && point.y < h) {
+			try {
+				processed[point.y][point.x] = WHITE;
+			} catch (e) {
+				console.log(point);
+			}
+		}
+	}
+	return processed;
+}
+
 function decide(frame: Frame) {
 	const timeStamp = Date.now();
 	const dt = (timeStamp - previousTimestamp) / 1000;
@@ -454,21 +533,56 @@ function decide(frame: Frame) {
 	let steering = steeringPID.update(-targetBearingDeg, dt);
 
 	let throttle =
-		0.098 +
-		0.21 * (1 - Math.min(1, Math.abs(steering) / (0.42 * MAX_STEERING_AMOUNT)));
+		THROTTLE_BASE +
+		THROTTLE_INCREMENT *
+			(1 -
+				Math.min(
+					1,
+					Math.abs(steering) /
+						(THROTTLE_INCREMENT_STEER_DROPOFF_RANGE * MAX_STEERING_AMOUNT)
+				));
 
 	throttle = Math.min(1, Math.max(0, throttle));
-	const throttleFiltered = throttleFilter.filter(throttle);
+	let throttleFiltered = throttleFilter.filter(throttle);
 	steering = Math.min(
 		MAX_STEERING_AMOUNT,
 		Math.max(-MAX_STEERING_AMOUNT, steering)
 	);
-	throttleAverageTracker.filter(throttleFiltered);
-	const estSpeed = throttleAverageTracker.getAverage() * 1550;
-	//const steerReduction = 0.6 * Math.min(1, Math.max(0, (estSpeed - 190) / 70));
-	//steering *= 1 - steerReduction;
+	avgThrottleTracker.filter(throttle);
+	const estSpeed = avgThrottleTracker.getAverage() * 1010 + 64;
+	turningTracker(steering, dt);
+
+	predTurns = predictTurnsViaHistory();
+
+	let boosting = false;
+	if (predTurns) {
+		const nextIsStraight = predTurns[1].turn == 'S';
+		const predictedDuration = predTurns[0].duration + predTurns[1].duration;
+		const boostCondition1 =
+			timeSpentInCurrentTurn > 0.35 * predTurns[0].duration;
+		const boostCondition2 = timeSpentInCurrentTurn < 0.7 * predictedDuration;
+		const boostCondition3 = predictedDuration > 1.8;
+		const canBoost =
+			nextIsStraight && boostCondition1 && boostCondition2 && boostCondition3;
+		if (canBoost) {
+			throttleFiltered *= 3.5;
+			boosting = true;
+		}
+	}
+
 	return {
-		throttle: throttleFiltered,
+		throttle: Math.min(1, Math.max(0, throttleFiltered)),
+		avgThrottle: avgThrottleTracker.getAverage(),
+		currentTurn,
+		boosting,
+		turnHistory: turnHistory
+			.slice(-4)
+			.map((t) => `${t.duration.toFixed(2)} ${t.turn}`)
+			.join(', '),
+		predTurn: predTurns
+			? predTurns.map((t) => `${t.duration.toFixed(2)} ${t.turn}`).join(', ')
+			: 'N/A',
+		timeSpentInCurrentTurn: timeSpentInDetectedTurn,
 		estSpeed,
 		steering,
 		targetBearingDeg,
