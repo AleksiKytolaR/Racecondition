@@ -169,17 +169,7 @@ class PIDController {
 }
 
 function findTargetPoint(middleBlob: Pixel[]) {
-	// Try to follow driving lines by moving to left when anticipating a right turn next etc.
-	let mode: 'LEFT' | 'RIGHT' | 'FURTHEST_FROM_CENTER' = 'FURTHEST_FROM_CENTER';
-	if (predTurns && predTurns[0].duration - timeSpentInCurrentTurn > 0.6) {
-		if (predTurns[0].turn == 'S' && predTurns[1].turn == 'R') {
-			mode = 'LEFT';
-		}
-		if (predTurns[0].turn == 'S' && predTurns[1].turn == 'L') {
-			mode = 'RIGHT';
-		}
-	}
-	const tip = findTipOfBlob(middleBlob, mode);
+	const tip = findTipOfBlob(middleBlob, 'FURTHEST_FROM_CENTER');
 	const middle = findTopCenterOfBlob(middleBlob);
 	return { x: tip.x * 0.6 + middle.x * 0.4, y: tip.y * 0.6 + middle.y * 0.4 };
 
@@ -386,15 +376,15 @@ function predictTurnsViaHistory() {
 
 const MAX_STEERING_AMOUNT = 1;
 const THROTTLE_BASE = 0.095;
-const THROTTLE_INCREMENT = 0.21;
-const THROTTLE_INCREMENT_STEER_DROPOFF_RANGE = 0.42;
+const THROTTLE_INCREMENT = 0.2;
+const THROTTLE_INCREMENT_STEER_DROPOFF_RANGE = 0.45;
 const KP = 1 / 120;
 const KI = 0;
 const KD = 1 / 6000;
 const D_LOWPASS_TC = 1 / 10;
 const INTEGRATOR_MAX_FACTOR = 0.25;
 const TARGET_POSITION_LPF_TC = 1;
-const THROTTLE_LPF_TC = 1 / 10;
+const THROTTLE_LPF_TC = 1 / 4;
 const ANGLE_CALCULATION_COORDINATE_HEIGHT = 10;
 const targetPositionXFilter = new LowPassFilter(TARGET_POSITION_LPF_TC, 32);
 const targetPositionYFilter = new LowPassFilter(TARGET_POSITION_LPF_TC, 20);
