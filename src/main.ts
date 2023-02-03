@@ -162,18 +162,21 @@ function sameColor(x: Color, y: Color) {
 }
 
 const MAX_STEERING_AMOUNT = 1;
-const THROTTLE_BASE = 0.0975;
+const THROTTLE_BASE = 0.095;
 const THROTTLE_INCREMENT = 0.14;
 const THROTTLE_INCREMENT_STEER_DROPOFF_RANGE = 0.36;
 const TOP_ESTIMATED_SPEED_LIMIT = 360;
-const KP = 0.775;
+const KP = 0.75;
 const KI = 0;
-const KD = 1 / 75;
+const KD = 1 / 35;
 const D_LOWPASS_TC = 1 / 2;
 const INTEGRATOR_MAX_FACTOR = 0.25;
+const TURN_DETECTION_STEER_THRESHOLD = 0.275;
+const TURN_DETECTION_TIME_TRESHOLD = 0.25;
+const TURN_HISTORY_LENGTH = 35;
 const avgThrottleTracker = new MovingAverageFilter(8);
 const avgSteerTracker = new MovingAverageFilter(6);
-const turnDetectionLpf = new LowPassFilter(1);
+const turnDetectionLpf = new LowPassFilter(0.75);
 
 const steeringPID = new PIDController(
 	KP,
@@ -188,9 +191,6 @@ const steeringPID = new PIDController(
 
 let previousTimestamp = Date.now();
 
-const TURN_DETECTION_STEER_THRESHOLD = 0.275;
-const TURN_DETECTION_TIME_TRESHOLD = 0.25;
-const TURN_HISTORY_LENGTH = 35;
 let currentTurn = 'S';
 let detectedTurn = 'S';
 interface TurnHistoryEntry {
@@ -328,7 +328,7 @@ function decide(frame: Frame) {
 	if (
 		predictedTurns &&
 		predictedTurns[0].turn === 'S' &&
-		timeSpentInCurrentTurn < predictedTurns[0].duration * 0.35 &&
+		timeSpentInCurrentTurn < predictedTurns[0].duration * 0.45 &&
 		predictedTurns[0].duration > 1.2
 	) {
 		boost = true;
@@ -337,7 +337,7 @@ function decide(frame: Frame) {
 		predictedTurns &&
 		predictedTurns[1].turn === 'S' &&
 		timeSpentInCurrentTurn > predictedTurns[0].duration * 0.35 &&
-		predictedTurns[0].duration + predictedTurns[1].duration > 2.3
+		predictedTurns[0].duration + predictedTurns[1].duration > 2
 	) {
 		boost = true;
 	}
@@ -356,7 +356,18 @@ function decide(frame: Frame) {
 			offset = -0.1;
 		}
 	}
-
+	if (
+		predictedTurns &&
+		predictedTurns[0].turn !== 'S' &&
+		predictedTurns[1].turn === 'S' &&
+		timeSpentInCurrentTurn > predictedTurns[0].duration * 0.25
+	) {
+		if (predictedTurns[0].turn === 'R') {
+			offset = 0.06;
+		} else {
+			offset = -0.06;
+		}
+	}
 	const steering = steeringPID.update(detectedTurn + offset, dt);
 	let throttle =
 		THROTTLE_BASE +
@@ -374,10 +385,12 @@ function decide(frame: Frame) {
 	avgSteerTracker.filter(steering);
 	turningTracker(avgSteerTracker.getAverage(), dt);
 
-	if (boost) throttle *= 1.15;
+	if (boost) {
+		throttle = Math.max(throttle + 0.02, 0.18);
+	}
 	//if (throttle > throttleLimit && !boost) throttle = throttleLimit;
 
-	throttle = Math.min(1, Math.max(0, throttle));
+	throttle = Math.min(0.275, Math.max(0, throttle));
 	return {
 		throttle,
 		boost,
