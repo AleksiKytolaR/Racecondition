@@ -163,12 +163,12 @@ function sameColor(x: Color, y: Color) {
 
 const MAX_STEERING_AMOUNT = 1;
 const THROTTLE_BASE = 0.095;
-const THROTTLE_INCREMENT = 0.14;
-const THROTTLE_INCREMENT_STEER_DROPOFF_RANGE = 0.36;
+const THROTTLE_INCREMENT = 0.13;
+const THROTTLE_INCREMENT_STEER_DROPOFF_RANGE = 0.3;
 const TOP_ESTIMATED_SPEED_LIMIT = 360;
-const KP = 0.75;
+const KP = 0.85;
 const KI = 0;
-const KD = 1 / 35;
+const KD = 1 / 105;
 const D_LOWPASS_TC = 1 / 2;
 const INTEGRATOR_MAX_FACTOR = 0.25;
 const TURN_DETECTION_STEER_THRESHOLD = 0.275;
@@ -176,7 +176,7 @@ const TURN_DETECTION_TIME_TRESHOLD = 0.25;
 const TURN_HISTORY_LENGTH = 35;
 const avgThrottleTracker = new MovingAverageFilter(8);
 const avgSteerTracker = new MovingAverageFilter(6);
-const turnDetectionLpf = new LowPassFilter(0.75);
+const turnDetectionLpf = new LowPassFilter(0.4);
 
 const steeringPID = new PIDController(
 	KP,
@@ -386,7 +386,7 @@ function decide(frame: Frame) {
 	turningTracker(avgSteerTracker.getAverage(), dt);
 
 	if (boost) {
-		throttle = Math.max(throttle + 0.02, 0.18);
+		throttle = Math.max(throttle * 1.1, 0.165);
 	}
 	//if (throttle > throttleLimit && !boost) throttle = throttleLimit;
 
