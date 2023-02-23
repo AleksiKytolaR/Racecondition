@@ -204,21 +204,21 @@ function sameColor(x: Color, y: Color) {
 }
 
 // PID Tuning Parameters
-const steeringDampener = new MaxChangeFilter(12.5, -12.5);
-const MAX_STEERING_AMOUNT = 1;
-const KP = 0.8;
+const steeringDampener = new MaxChangeFilter(13, -13);
+const MAX_STEERING_AMOUNT = 0.8;
+const KP = 0.85;
 const KI = 0;
-const KD = 1 / 90;
+const KD = 1 / 50;
 const D_LOWPASS_TC = 1 / 2;
 const INTEGRATOR_MAX_FACTOR = 0.25;
 
 // Throttle tuning
 const steerTrackingLpf = new LowPassFilter(1 / 2);
-const throttleFilter = new MaxChangeFilter(0.55, undefined);
+const throttleFilter = new MaxChangeFilter(0.525, undefined);
 const throttleCurve = new SamplingCurve([
 	{
 		x: 0,
-		y: 0.3,
+		y: 0.29,
 	},
 	{
 		x: 0.2,
@@ -226,11 +226,11 @@ const throttleCurve = new SamplingCurve([
 	},
 	{
 		x: 0.4,
-		y: 0.17,
+		y: 0.185,
 	},
 	{
 		x: 0.6,
-		y: 0.12,
+		y: 0.13,
 	},
 	{
 		x: 0.8,
@@ -400,7 +400,7 @@ const shouldBoost = () => {
 	if (
 		predictedTurns &&
 		predictedTurns[0].turn === 'S' &&
-		timeSpentInCurrentTurn < predictedTurns[0].duration * 0.45 &&
+		timeSpentInCurrentTurn < predictedTurns[0].duration * 0.6 &&
 		predictedTurns[0].duration > 1.2
 	) {
 		return true;
@@ -410,7 +410,7 @@ const shouldBoost = () => {
 		predictedTurns[1].turn === 'S' &&
 		timeSpentInCurrentTurn > predictedTurns[0].duration * 0.35 &&
 		predictedTurns[1].duration > 0.8 &&
-		predictedTurns[0].duration + predictedTurns[1].duration > 2.4
+		predictedTurns[0].duration + predictedTurns[1].duration > 2
 	) {
 		return true;
 	}
