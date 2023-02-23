@@ -309,9 +309,9 @@ function turningTracker(steering: number, dt: number) {
 
 function predictTurnsViaHistory() {
 	if (turnHistory.length < 12) return null;
-	const prevTurns = turnHistory.slice(-5);
+	const prevTurns = turnHistory.slice(-6);
 
-	for (let i = turnHistory.length - 5 - 1 - 2; i >= 0; i--) {
+	for (let i = turnHistory.length - 6 - 4; i >= 0; i--) {
 		let matches = true;
 		for (let j = 0; j < prevTurns.length; j++) {
 			if (turnHistory[i + j].turn !== prevTurns[j].turn) {
@@ -386,11 +386,66 @@ const calculateTurn = (frame: Frame) => {
 	return turn;
 };
 
-const calculateThrottle = (steering: number, dt: number) => {
+const calculateThrottle = (steering: number, dt: number, boost: boolean) => {
 	const steeringFiltered = steerTrackingLpf.filter(steering);
-	const throttle = throttleCurve.getValue(Math.abs(steeringFiltered));
+	let throttle = throttleCurve.getValue(Math.abs(steeringFiltered));
+	if (boost) {
+		throttle += 0.03;
+	}
 	const filteredThrottle = throttleFilter.filter(throttle, dt);
 	return filteredThrottle;
+};
+
+const shouldBoost = () => {
+	if (
+		predictedTurns &&
+		predictedTurns[0].turn === 'S' &&
+		timeSpentInCurrentTurn < predictedTurns[0].duration * 0.45 &&
+		predictedTurns[0].duration > 1.2
+	) {
+		return true;
+	}
+	if (
+		predictedTurns &&
+		predictedTurns[1].turn === 'S' &&
+		timeSpentInCurrentTurn > predictedTurns[0].duration * 0.35 &&
+		predictedTurns[1].duration > 0.8 &&
+		predictedTurns[0].duration + predictedTurns[1].duration > 2.4
+	) {
+		return true;
+	}
+
+	return false;
+};
+
+const calculateDrivingOffset = () => {
+	let offset = 0;
+	if (
+		predictedTurns &&
+		predictedTurns[0].turn === 'S' &&
+		predictedTurns[0].duration > 0.65 &&
+		timeSpentInCurrentTurn > 0.25 &&
+		predictedTurns[0].duration - timeSpentInCurrentTurn > 0.35
+	) {
+		if (predictedTurns[1].turn === 'R') {
+			offset = 0.04;
+		} else {
+			offset = -0.04;
+		}
+	}
+	if (
+		predictedTurns &&
+		predictedTurns[0].turn !== 'S' &&
+		predictedTurns[1].turn === 'S' &&
+		timeSpentInCurrentTurn > predictedTurns[0].duration * 0.25
+	) {
+		if (predictedTurns[0].turn === 'R') {
+			offset = 0.02;
+		} else {
+			offset = -0.02;
+		}
+	}
+	return offset;
 };
 
 function decide(frame: Frame) {
@@ -401,15 +456,20 @@ function decide(frame: Frame) {
 	const detectedTurn = turnDetectionLpf.filter(calculateTurn(frame));
 	predictedTurns = predictTurnsViaHistory();
 
-	const steering = steeringPID.update(detectedTurn, dt);
+	let steering = steeringPID.update(detectedTurn, dt);
+	const offset = 0; //calculateDrivingOffset();;
+	steering += offset;
 	const steeringDampened = steeringDampener.filter(steering, dt);
-	const throttle = calculateThrottle(steeringDampened, dt);
+	const boost = shouldBoost();
+	const throttle = calculateThrottle(steeringDampened, dt, boost);
 
 	avgSteerTracker.filter(steeringDampened);
 	turningTracker(avgSteerTracker.getAverage(), dt);
 
 	return {
 		throttle,
+		boost,
+		offset,
 		steering: steeringDampened,
 		currentTurn,
 		timeSpentInCurrentTurn,
